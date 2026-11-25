@@ -1113,6 +1113,21 @@ final class ProtectService: NSObject, ObservableObject {
         await MainActor.run { self.isLoading = value }
     }
 
+    /// A WebSocket to the Integration API's event stream (motion, smart
+    /// detections, …), authenticated like every other Integration call and
+    /// trusted through the same pinning delegate. Nil while unconfigured.
+    /// The caller resumes it and owns its lifetime — see `ProtectEventStream`.
+    func makeEventSocket() -> URLSessionWebSocketTask? {
+        guard !apiKeyHeader.isEmpty,
+              let url = makeURL(path: "proxy/protect/integration/v1/subscribe/events"),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.scheme = "wss"
+        guard let socketURL = components.url else { return nil }
+        var request = URLRequest(url: socketURL, timeoutInterval: 10)
+        request.setValue(apiKeyHeader, forHTTPHeaderField: "X-API-Key")
+        return tlsSession.webSocketTask(with: request)
+    }
+
     func makeURL(path: String) -> URL? {
         guard let address = controllerAddress else { return nil }
         // Every request passes through here, so the delegate always pins

@@ -61,6 +61,9 @@ final class ProtectHub: ObservableObject {
     private(set) var sites: [ControllerSite] = []
     private var services: [String: ProtectService] = [:]
     private var subscriptions: [String: Set<AnyCancellable>] = [:]
+    private var eventStreams: [String: ProtectEventStream] = [:]
+    /// Raw event-stream messages from every site, tagged with the site id.
+    let eventMessages = PassthroughSubject<(siteID: String, data: Data), Never>()
     private var sitesSubscription: AnyCancellable?
     /// Last known site of every camera any service listed — including those
     /// of a currently failing site, so their streams can still be released.
@@ -109,11 +112,19 @@ final class ProtectHub: ObservableObject {
             service.cleanupPinnedStreams()
             services[id] = nil
             subscriptions[id] = nil
+            eventStreams.removeValue(forKey: id)?.stop()
         }
         for site in newSites where services[site.id] == nil {
             let service = makeService(site)
             services[site.id] = service
             subscribe(service, site: site)
+            let siteID = site.id
+            let stream = ProtectEventStream(service: service) { [weak self] data in
+                RTSPClient.log("[Events] \(String(data: data.prefix(4000), encoding: .utf8) ?? "<\(data.count) bytes>")")
+                self?.eventMessages.send((siteID, data))
+            }
+            eventStreams[siteID] = stream
+            stream.start()
         }
         sites = newSites
         recompute()
@@ -253,6 +264,8 @@ final class ProtectHub: ObservableObject {
 
     func refetchForNewConnection(siteID: String) async {
         await services[siteID]?.refetchForNewConnection()
+        // The event socket still addresses the old controller or key.
+        eventStreams[siteID]?.restart()
         recompute()
     }
 

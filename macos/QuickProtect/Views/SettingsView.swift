@@ -8,6 +8,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case connection = "Connection"
     case ptz        = "PTZ"
     case cameras    = "Cameras"
+    case popUps     = "Pop-ups"
     case shortcuts  = "Shortcuts"
     case updates    = "Updates"
     case about      = "About"
@@ -26,6 +27,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .connection: return "link"
         case .ptz:        return "scope"
         case .cameras:    return "square.grid.2x2"
+        case .popUps:     return "bell.badge"
         case .shortcuts:  return "keyboard"
         case .updates:    return "arrow.down.circle"
         case .about:      return "info.circle"
@@ -40,6 +42,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .connection: return String(localized: "Connection")
         case .ptz:        return String(localized: "PTZ")
         case .cameras:    return String(localized: "Cameras")
+        case .popUps:     return String(localized: "Pop-ups")
         case .shortcuts:  return String(localized: "Shortcuts")
         case .updates:    return String(localized: "Updates")
         case .about:      return String(localized: "About")
@@ -141,6 +144,7 @@ struct SettingsView: View {
                     case .connection: connectionTab
                     case .ptz:        ptzTab
                     case .cameras:    camerasTab
+                    case .popUps:     popUpsTab
                     case .shortcuts:  shortcutsTab
                     case .updates:    updatesTab
                     case .about:      aboutTab

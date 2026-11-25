@@ -10,8 +10,17 @@ import Combine
 /// closing. When nothing is pinned no controllers — and therefore no streams —
 /// exist, preserving the app's "0% CPU when the popover is closed" behaviour.
 @MainActor
-final class PinnedWindowManager {
+final class PinnedWindowManager: DetectionPopUpWindows {
     private var controllers: [String: PinnedCameraController] = [:]
+    /// Cameras whose window was opened by a detection, not pinned by the
+    /// user: never persisted, and closed again by `dismissPopUp`.
+    private var popUps: Set<String> = []
+    /// Pop-ups still in the stack, in arrival order. One the user moved or
+    /// resized drops out and stays where it was put until it closes.
+    private var stack: [String] = []
+    private var layoutSubscriptions: Set<AnyCancellable> = []
+    /// The user closed a detection pop-up themselves (its close button).
+    var onPopUpClosedByUser: ((String) -> Void)?
     private weak var hub: ProtectHub?
     private var camerasCancellable: AnyCancellable?
     private var siteRemovedCancellable: AnyCancellable?
@@ -27,19 +36,108 @@ final class PinnedWindowManager {
         // A removed site's windows have no console left to stream from.
         siteRemovedCancellable = hub.siteRemoved
             .sink { [weak self] siteID in self?.unpinAll(siteID: siteID) }
+        // Re-stack when the placement settings or the display layout change.
+        // objectWillChange fires before the value lands; the run-loop hop
+        // reads the settled settings.
+        AppSettings.shared.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.restack(animated: true) }
+            .store(in: &layoutSubscriptions)
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.restack(animated: false) }
+            .store(in: &layoutSubscriptions)
+    }
+
+    // MARK: Pop-up stack
+
+    /// The display pop-ups go on: the one named in Settings, else the main one.
+    private var stackScreen: NSScreen? {
+        let name = AppSettings.shared.popUpDisplay
+        return NSScreen.screens.first { !name.isEmpty && $0.localizedName == name }
+            ?? NSScreen.screens.first ?? NSScreen.main
+    }
+
+    private func stackFrames(aspects: [CGFloat]) -> [NSRect] {
+        let settings = AppSettings.shared
+        let area = stackScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        return PopUpStackLayout(corner: settings.popUpCorner, direction: settings.popUpDirection,
+                                size: settings.popUpSize, area: area).frames(aspects: aspects)
+    }
+
+    /// Puts every stacked pop-up in its slot, closing any gap.
+    private func restack(animated: Bool) {
+        stack.removeAll { controllers[$0] == nil }
+        guard !stack.isEmpty else { return }
+        let stacked = stack.compactMap { controllers[$0] }
+        for (controller, frame) in zip(stacked, stackFrames(aspects: stacked.map(\.aspect))) {
+            controller.place(frame, animated: animated)
+        }
+    }
+
+    private func leaveStack(_ cameraId: String) {
+        guard let index = stack.firstIndex(of: cameraId) else { return }
+        stack.remove(at: index)
+        restack(animated: true)
     }
 
     private func unpinAll(siteID: String) {
         for (id, controller) in controllers where controller.siteID == siteID { unpin(id) }
     }
 
-    /// True when a live window exists or the camera is persisted as pinned.
+    /// True when the user's own pinned window exists or the camera is
+    /// persisted as pinned. A detection pop-up doesn't count.
     func isPinned(_ cameraId: String) -> Bool {
-        controllers[cameraId] != nil || AppSettings.shared.isPinned(cameraId)
+        (controllers[cameraId] != nil && !popUps.contains(cameraId)) || AppSettings.shared.isPinned(cameraId)
     }
 
     func togglePin(_ camera: Camera) {
-        if isPinned(camera.id) { unpin(camera.id) } else { pin(camera) }
+        if popUps.remove(camera.id) != nil {
+            // Pinning a camera whose pop-up is showing keeps that window.
+            controllers[camera.id]?.makePermanent()
+            leaveStack(camera.id)
+        } else if isPinned(camera.id) {
+            unpin(camera.id)
+        } else {
+            pin(camera)
+        }
+    }
+
+    // MARK: Detection pop-ups
+
+    /// Opens a temporary window for a detection. No-op when the camera
+    /// already has a window (pinned by the user, or popped up earlier).
+    func popUp(_ camera: Camera, showingSecondaryLens: Bool) {
+        if showingSecondaryLens, popUps.contains(camera.id) {
+            // Already up for an earlier detection: add the inset to it.
+            controllers[camera.id]?.showSecondaryLens()
+        }
+        guard controllers[camera.id] == nil, let service = hub?.service(for: camera) else { return }
+        // Its slot is the end of the stack; the windows already there stay put.
+        stack.removeAll { controllers[$0] == nil }
+        let aspect = AppSettings.shared.cachedAspectRatio(for: camera.id) ?? PinnedWindowGeometry.fallbackAspect
+        let aspects = stack.compactMap { controllers[$0]?.aspect } + [aspect]
+        guard let slot = stackFrames(aspects: aspects).last else { return }
+        let controller = PinnedCameraController(
+            camera: camera, service: service,
+            cascadeIndex: controllers.count,
+            stackFrame: slot,
+            onClose: { [weak self] id in self?.unpin(id) }
+        )
+        controller.onAspectChanged = { [weak self] in self?.restack(animated: true) }
+        controller.onMovedByUser = { [weak self] id in self?.leaveStack(id) }
+        controllers[camera.id] = controller
+        popUps.insert(camera.id)
+        stack.append(camera.id)
+        controller.show()
+        if showingSecondaryLens { controller.showSecondaryLens() }
+    }
+
+    /// Closes a detection pop-up. A window the user pinned is left alone.
+    func dismissPopUp(_ cameraId: String) {
+        guard popUps.remove(cameraId) != nil else { return }
+        controllers.removeValue(forKey: cameraId)?.teardown()
+        leaveStack(cameraId)
     }
 
     func pin(_ camera: Camera) {
@@ -55,8 +153,13 @@ final class PinnedWindowManager {
     }
 
     func unpin(_ cameraId: String) {
+        let wasPopUp = popUps.remove(cameraId) != nil
         AppSettings.shared.removePinned(cameraId)
         controllers.removeValue(forKey: cameraId)?.teardown()
+        if wasPopUp {
+            leaveStack(cameraId)
+            onPopUpClosedByUser?(cameraId)
+        }
     }
 
     /// Restore persisted pins for cameras now present, and refresh open windows.
@@ -104,6 +207,8 @@ final class PinnedWindowManager {
     func closeAll() {
         for controller in controllers.values { controller.teardown() }
         controllers.removeAll()
+        popUps.removeAll()
+        stack.removeAll()
         hub?.cleanupPinnedStreams()
     }
 }
@@ -124,6 +229,11 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
     private let onClose: (String) -> Void
 
     private let client = RTSPClient()
+    /// The camera's second lens, shown as an inset on a package detection.
+    private let insetClient = RTSPClient()
+    private var insetTask: Task<Void, Never>?
+    /// The inset's stream allocation, held until the window closes.
+    private var insetQuality: String?
     private let panel: NSPanel
     private var streamTask: Task<Void, Never>?
     private var connectedQuality: String?
@@ -145,7 +255,20 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
     /// Suppresses frame persistence while we programmatically resize.
     private var isAdjustingFrame = false
 
+    /// True while this window is a detection pop-up: its frame is neither
+    /// persisted nor remembered. Cleared when the user pins it.
+    private(set) var isPopUp: Bool
+    /// Width ÷ height of the video (cached, then exact once a frame arrives).
+    private(set) var aspect: CGFloat
+    /// The video's real shape just became known (stack heights depend on it).
+    var onAspectChanged: (() -> Void)?
+    /// The user moved or resized a pop-up by hand.
+    var onMovedByUser: ((String) -> Void)?
+    /// Counts in-flight programmatic frame changes (see `place`).
+    private var placements = 0
+
     init(camera: Camera, service: ProtectService, cascadeIndex: Int,
+         stackFrame: NSRect? = nil,
          onClose: @escaping (String) -> Void) {
         self.cameraId = camera.id
         self.siteID = service.siteID
@@ -155,9 +278,13 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
 
         let aspect = AppSettings.shared.cachedAspectRatio(for: camera.id)
             ?? PinnedWindowGeometry.fallbackAspect
-        let saved = AppSettings.shared.pinnedCameras().first { $0.cameraId == camera.id }?.frame
-        let frame = Self.initialFrame(saved: saved, aspect: aspect, cascadeIndex: cascadeIndex)
+        // A detection pop-up is placed by the manager's stack, not by this
+        // camera's remembered frame, and must not resize itself afterwards.
+        let saved = stackFrame ?? AppSettings.shared.pinnedCameras().first { $0.cameraId == camera.id }?.frame
+        let frame = stackFrame ?? Self.initialFrame(saved: saved, aspect: aspect, cascadeIndex: cascadeIndex)
         self.restoredSavedFrame = saved != nil
+        self.isPopUp = stackFrame != nil
+        self.aspect = aspect
 
         let panel = PinnedPanel(
             contentRect: frame,
@@ -185,7 +312,15 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
 
         super.init()
 
-        panel.contentViewController = NSHostingController(rootView: makeView())
+        // Installing a content view controller resizes the window to the
+        // SwiftUI view's ideal size, which would shrink a restored frame to
+        // the default (and `show()` would then persist the shrunken one).
+        // The video has no size of its own, so stop the host from sizing the
+        // window and put the intended frame back.
+        let host = NSHostingController(rootView: makeView())
+        host.sizingOptions = []
+        panel.contentViewController = host
+        panel.setFrame(frame, display: false)
         panel.delegate = self
 
         dimsCancellable = client.$videoDimensions
@@ -221,6 +356,7 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
     private func makeView() -> PinnedCameraView {
         PinnedCameraView(
             client: client,
+            inset: insetClient,
             stream: streamState,
             cameraName: displayName,
             onReconnect: { [weak self] in self?.reconnect() },
@@ -270,6 +406,7 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
         certificateCancellable = nil
         client.disconnect()
         releaseAllocation()
+        stopSecondaryLens()
         panel.delegate = nil
         panel.orderOut(nil)
         panel.contentViewController = nil
@@ -318,6 +455,7 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
         // frame on screen as if it were still live.
         client.disconnect(clearingPicture: true)
         releaseAllocation()
+        stopSecondaryLens()
         streamState.isFailed = false
         streamState.reason = nil
     }
@@ -397,6 +535,10 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
         let ar = dims.width / dims.height
         panel.contentAspectRatio = NSSize(width: dims.width, height: dims.height)
         AppSettings.shared.cacheVideoDimensions(dims, for: cameraId)
+        if abs(ar - aspect) > 0.001 {
+            aspect = ar
+            onAspectChanged?()
+        }
         // Resize to the true aspect only once, and only when we didn't restore a
         // user-sized frame — otherwise respect what the user (or last session)
         // chose and just keep the ratio locked from here on.
@@ -459,19 +601,82 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
     }
 
     private func persistFrame() {
+        guard !isPopUp else { return }
         AppSettings.shared.setPinnedFrame(panel.frame, for: cameraId)
+    }
+
+    /// Streams the camera's second lens into an inset for the rest of this
+    /// window's life. No-op for a single-lens camera or once it is showing.
+    /// A failed attempt just leaves the inset off: the main view is what the
+    /// window is for, so it is not retried.
+    func showSecondaryLens() {
+        guard let lens = camera.secondaryLens, let service,
+              insetTask == nil, insetQuality == nil else { return }
+        let camera = self.camera
+        insetTask = Task { [weak self] in
+            let stream = await service.createPinnedStreamURL(for: camera, quality: lens.quality)
+            guard let self, !Task.isCancelled else { return }
+            self.insetTask = nil
+            guard let stream else {
+                RTSPClient.log("[Pinned] \(camera.name): no \(lens.quality) stream for the inset")
+                return
+            }
+            self.insetQuality = stream.quality
+            self.streamState.insetLabel = lens.label
+            self.insetClient.connect(to: stream.url, pinKey: self.service?.controllerAddress?.pinKey)
+        }
+    }
+
+    private func stopSecondaryLens() {
+        insetTask?.cancel()
+        insetTask = nil
+        insetClient.disconnect()
+        if let quality = insetQuality {
+            insetQuality = nil
+            service?.releasePinnedStream(for: cameraId, quality: quality)
+        }
+        streamState.insetLabel = nil
+    }
+
+    /// Moves a stacked pop-up to its slot. Animated moves finish later, so
+    /// the delegate callbacks they cause are told apart from the user's own
+    /// drags by counting the placements still in flight.
+    func place(_ frame: NSRect, animated: Bool) {
+        guard panel.frame != frame else { return }
+        placements += 1
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = animated ? 0.22 : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in self?.placements -= 1 }
+        })
+    }
+
+    /// The user pinned this pop-up: keep it, where it is, as their own window.
+    func makePermanent() {
+        isPopUp = false
+        AppSettings.shared.setPinned(cameraId, frame: panel.frame)
+    }
+
+    private func frameChangedByUser() {
+        if isPopUp {
+            if placements == 0 { onMovedByUser?(cameraId) }
+        } else {
+            persistFrame()
+        }
     }
 
     // MARK: NSWindowDelegate
 
     func windowDidMove(_ notification: Notification) {
         guard !isAdjustingFrame else { return }
-        persistFrame()
+        frameChangedByUser()
     }
 
     func windowDidResize(_ notification: Notification) {
         guard !isAdjustingFrame else { return }
-        persistFrame()
+        frameChangedByUser()
     }
 }
 
@@ -487,6 +692,8 @@ final class PinnedStreamState: ObservableObject {
     @Published var reason: String?
     /// The controller's certificate changed; the failure overlay offers review.
     @Published var certificateChanged = false
+    /// Name of the second lens while its inset is wanted; nil otherwise.
+    @Published var insetLabel: String?
 }
 
 /// The contents of a pinned floating window: the live feed plus hover chrome
@@ -494,6 +701,8 @@ final class PinnedStreamState: ObservableObject {
 /// and `AuroraFocusIconButton` for the controls.
 struct PinnedCameraView: View {
     @ObservedObject var client: RTSPClient
+    /// The second lens's stream; draws nothing until it has a frame.
+    @ObservedObject var inset: RTSPClient
     @ObservedObject var stream: PinnedStreamState
     let cameraName: String
     let onReconnect: () -> Void
@@ -520,6 +729,10 @@ struct PinnedCameraView: View {
                         .tint(.white)
                         .allowsHitTesting(false)
                 }
+            }
+
+            if let label = stream.insetLabel, inset.hasFrame {
+                secondaryLensInset(label: label)
             }
 
             chrome
@@ -549,6 +762,31 @@ struct PinnedCameraView: View {
         )
         .onHover { hover = $0 }
         .preferredColorScheme(.dark)
+    }
+
+    /// The second lens, bottom-left (the resize grip owns bottom-right). It
+    /// takes no clicks, so the window still drags from over it.
+    private func secondaryLensInset(label: String) -> some View {
+        GeometryReader { geo in
+            let dims = inset.videoDimensions
+            let aspect = dims.width > 0 && dims.height > 0 ? dims.width / dims.height : 4.0 / 3.0
+            let width = max(96, geo.size.width * 0.3)
+            VStack {
+                Spacer()
+                HStack {
+                    ProtectStreamView(displayLayer: inset.displayLayer, videoGravity: .resizeAspect)
+                        .frame(width: width, height: width / aspect)
+                        .background(Color.black)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.35), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.5), radius: 4, y: 1)
+                        .accessibilityLabel(label)
+                    Spacer()
+                }
+            }
+            .padding(8)
+        }
+        .allowsHitTesting(false)
     }
 
     /// Shown between recovery attempts. Only the button takes clicks, so the
@@ -681,11 +919,24 @@ struct PinnedCameraView: View {
 /// `mouseDown` isn't reliable either — the hosting view swallowed about a
 /// third of the clicks that hit-tested to `WindowDragNSView`.
 private final class PinnedPanel: NSPanel {
+    /// True from the mouse-down that started a move until its mouse-up.
+    private var isMoving = false
+
     override func sendEvent(_ event: NSEvent) {
+        // A new gesture ends any move whose mouse-up the system drag consumed.
+        if event.type == .leftMouseDown { isMoving = false }
         if event.type == .leftMouseDown, let content = contentView,
            content.hitTest(content.convert(event.locationInWindow, from: nil)) is WindowDragNSView {
+            isMoving = true
             performDrag(with: event)
             return
+        }
+        // The move's mouse-down was never forwarded, so the rest of its
+        // gesture must not be either: AppKit would deliver it to the view
+        // that took the previous mouse-down (the resize grip, after a resize).
+        if isMoving {
+            if event.type == .leftMouseUp { isMoving = false; return }
+            if event.type == .leftMouseDragged { return }
         }
         super.sendEvent(event)
     }
@@ -740,6 +991,13 @@ private struct WindowResizeHandle: NSViewRepresentable {
 private final class ResizeHandleNSView: NSView {
     private var anchorLeft: CGFloat = 0
     private var anchorTop: CGFloat = 0
+    /// True only between this view's own mouse-down and mouse-up. A window move
+    /// starts in `PinnedPanel.sendEvent`, which never forwards its mouse-down,
+    /// so AppKit keeps routing that gesture's drag events to whichever view
+    /// took the last forwarded mouse-down. After a resize that is this view,
+    /// and without the flag it would resize against a stale anchor while the
+    /// system moves the window.
+    private var isResizing = false
 
     // Don't let `isMovableByWindowBackground` hijack the drag as a window move.
     override var mouseDownCanMoveWindow: Bool { false }
@@ -752,10 +1010,15 @@ private final class ResizeHandleNSView: NSView {
         guard let window else { return }
         anchorLeft = window.frame.minX
         anchorTop = window.frame.maxY
+        isResizing = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        isResizing = false
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let window else { return }
+        guard isResizing, let window else { return }
         let ca = window.contentAspectRatio
         let aspect = (ca.width > 0 && ca.height > 0)
             ? ca.width / ca.height : PinnedWindowGeometry.fallbackAspect

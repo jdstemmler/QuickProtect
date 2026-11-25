@@ -94,14 +94,32 @@ extension AppSettings {
         return dict[cameraId] != nil
     }
 
-    /// Pin a camera, optionally recording its window frame. A `nil` frame marks
-    /// the camera as pinned but not yet positioned (the controller computes a
-    /// default and writes it back on first layout).
+    /// Pin a camera, optionally recording its window frame. With a `nil` frame
+    /// the camera reopens where its window last was (see `lastPinnedFrame`);
+    /// a camera never pinned before is marked pinned but not yet positioned
+    /// (the controller computes a default and writes it back on first layout).
     func setPinned(_ cameraId: String, frame: NSRect? = nil) {
+        let frame = frame ?? lastPinnedFrame(for: cameraId)
         var dict = (defaults.dictionary(forKey: Keys.pinnedCameras) as? [String: [String: Double]]) ?? [:]
         dict[cameraId] = PinnedCameraState(cameraId: cameraId, frame: frame).dictionary
         defaults.set(dict, forKey: Keys.pinnedCameras)
+        if let frame { rememberPinnedFrame(frame, for: cameraId) }
         objectWillChange.send()
+    }
+
+    /// Records where this camera's window is, whether or not it is pinned.
+    func rememberPinnedFrame(_ frame: NSRect, for cameraId: String) {
+        var last = (defaults.dictionary(forKey: Keys.pinnedLastFrames) as? [String: [String: Double]]) ?? [:]
+        last[cameraId] = PinnedCameraState(cameraId: cameraId, frame: frame).dictionary
+        defaults.set(last, forKey: Keys.pinnedLastFrames)
+    }
+
+    /// Where this camera's pinned window last was. Kept when the camera is
+    /// unpinned, so pinning it again reopens the window at the same place and
+    /// size instead of the default corner.
+    func lastPinnedFrame(for cameraId: String) -> NSRect? {
+        let last = (defaults.dictionary(forKey: Keys.pinnedLastFrames) as? [String: [String: Double]]) ?? [:]
+        return last[cameraId].flatMap { PinnedCameraState(cameraId: cameraId, dictionary: $0).frame }
     }
 
     /// Persist a moved/resized pinned window's frame. No-op if not pinned, so a

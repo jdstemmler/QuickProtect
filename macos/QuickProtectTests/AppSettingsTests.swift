@@ -351,6 +351,40 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(s.effectiveStreamQuality(for: "cam"), .low)
     }
 
+    func testPopUpChoicesPerCamera() {
+        let s = makeSettings()
+        XCTAssertFalse(s.popUpEnabled(for: "cam"))
+        XCTAssertEqual(s.popUpTriggers(for: "cam"), DetectionTrigger.defaults)
+
+        s.setPopUpEnabled(true, for: "cam")
+        s.setPopUpTriggers([.person, .vehicle], for: "cam")
+        // Switching a camera off keeps its triggers for when it is switched back on.
+        s.setPopUpEnabled(false, for: "cam")
+        let reloaded = makeSettings()
+        XCTAssertFalse(reloaded.popUpEnabled(for: "cam"))
+        XCTAssertEqual(reloaded.popUpTriggers(for: "cam"), [.person, .vehicle])
+        XCTAssertFalse(reloaded.popUpEnabled(for: "other"))
+
+        // An explicitly empty choice stays empty rather than reverting to the defaults.
+        s.setPopUpTriggers([], for: "cam")
+        XCTAssertEqual(s.popUpTriggers(for: "cam"), [])
+        XCTAssertEqual(s.popUpLingerSeconds, AppSettings.defaultPopUpLingerSeconds)
+    }
+
+    func testPinnedFrameSurvivesUnpin() {
+        let s = makeSettings()
+        s.setPinned("cam")
+        let frame = NSRect(x: 40, y: 60, width: 480, height: 270)
+        s.setPinnedFrame(frame, for: "cam")
+        s.removePinned("cam")
+        XCTAssertEqual(s.lastPinnedFrame(for: "cam"), frame)
+
+        // Pinning again reopens at the remembered frame; other cameras don't inherit it.
+        s.setPinned("cam")
+        XCTAssertEqual(s.pinnedCameras().first?.frame, frame)
+        XCTAssertNil(s.lastPinnedFrame(for: "other"))
+    }
+
     func testPinnedCameraStateRoundTrip() {
         let s = makeSettings()
         s.setPinned("cam")

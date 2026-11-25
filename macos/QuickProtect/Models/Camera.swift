@@ -67,6 +67,12 @@ struct Camera: Identifiable {
     /// stays lens-agnostic: it only needs the stream quality and a UI label.
     var secondaryLens: SecondaryLens?
 
+    /// Object types this camera can detect (`person`, `vehicle`, …), from the
+    /// Integration API's feature flags. Nil when the payload didn't say.
+    var detectableObjects: [String]?
+    /// True if the camera can classify sounds (smoke alarm, speech, …).
+    var detectsSound: Bool = false
+
     /// A camera's additional fixed lens, streamed as its own RTSP quality.
     struct SecondaryLens: Equatable {
         /// The `qualities` key passed to the rtsps-stream endpoint (e.g. "package").
@@ -154,6 +160,10 @@ extension Camera: Codable {
             isPtz = false
             canZoom = false
         }
+        if let smart = try? c.decode(SmartDetectFlags.self, forKey: .featureFlags) {
+            detectableObjects = smart.smartDetectTypes
+            detectsSound = !(smart.smartDetectAudioTypes ?? []).isEmpty
+        }
         // hasPackageCamera (Integration API list) → the only secondary lens
         // current firmware exposes. Mapping it here keeps the view/stream layers
         // generic; new secondary-lens types slot in by extending this branch.
@@ -178,6 +188,12 @@ extension Camera: Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, state, channels, featureFlags, hasPackageCamera
+    }
+
+    /// The detection capabilities inside `featureFlags` (Integration API).
+    private struct SmartDetectFlags: Decodable {
+        let smartDetectTypes: [String]?
+        let smartDetectAudioTypes: [String]?
     }
 }
 

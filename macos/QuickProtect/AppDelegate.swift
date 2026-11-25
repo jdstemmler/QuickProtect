@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Owns pinned always-on-top camera windows. Their streams are independent
     /// of the popover's, so they keep running while the popover is closed.
     private(set) lazy var pinnedWindows = PinnedWindowManager(hub: service)
+    /// Opens and closes pinned windows on the detections the user chose.
+    private var detectionPopUps: DetectionPopUpCoordinator?
 
     // MARK: - Lifecycle
 
@@ -101,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Instantiate before the first fetch so the manager's camera-list
         // subscription is in place to restore persisted pins when cameras load.
         appState.pinnedWindows = pinnedWindows
+        detectionPopUps = DetectionPopUpCoordinator(hub: service, windows: pinnedWindows)
         let s = AppSettings.shared
         if s.sites.contains(where: \.isConfigured) {
             Task { await service.fetchCameras() }
@@ -282,6 +285,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let pauseItem = NSMenuItem(title: String(localized: "Pause Detection Pop-ups"),
+                                   action: #selector(togglePopUpsPaused), keyEquivalent: "")
+        pauseItem.target = self
+        pauseItem.state = AppSettings.shared.popUpsPaused ? .on : .off
+        menu.addItem(pauseItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: String(localized: "Quit QuickProtect"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -290,6 +299,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem?.menu = menu
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
+    }
+
+    @objc private func togglePopUpsPaused() {
+        AppSettings.shared.popUpsPaused.toggle()
     }
 
     @objc private func openSettingsFromMenu() {

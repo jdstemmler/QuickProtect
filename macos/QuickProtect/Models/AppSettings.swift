@@ -71,6 +71,35 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(keepPanelOpen, forKey: Keys.keepPanelOpen) }
     }
 
+    /// Temporarily stops every camera's detection pop-ups without touching
+    /// the per-camera choices. Default off.
+    @Published var popUpsPaused: Bool {
+        didSet { defaults.set(popUpsPaused, forKey: Keys.popUpsPaused) }
+    }
+
+    /// How long a detection pop-up stays open after its detection ends.
+    @Published var popUpLingerSeconds: Int {
+        didSet { defaults.set(popUpLingerSeconds, forKey: Keys.popUpLingerSeconds) }
+    }
+    static let defaultPopUpLingerSeconds = 15
+
+    /// Where detection pop-ups stack: the corner they grow out of, their
+    /// size, and whether they stack in a column or a row.
+    @Published var popUpCorner: PopUpCorner {
+        didSet { defaults.set(popUpCorner.rawValue, forKey: Keys.popUpCorner) }
+    }
+    @Published var popUpSize: PopUpSize {
+        didSet { defaults.set(popUpSize.rawValue, forKey: Keys.popUpSize) }
+    }
+    @Published var popUpDirection: PopUpDirection {
+        didSet { defaults.set(popUpDirection.rawValue, forKey: Keys.popUpDirection) }
+    }
+    /// Name of the display pop-ups appear on; empty means the main display
+    /// (also used when the named display isn't connected).
+    @Published var popUpDisplay: String {
+        didSet { defaults.set(popUpDisplay, forKey: Keys.popUpDisplay) }
+    }
+
     /// Bottom-left corner (screen coordinates) where a kept-open panel was last
     /// left; nil until it has been shown once in that mode.
     var panelOrigin: NSPoint? {
@@ -209,6 +238,15 @@ final class AppSettings: ObservableObject {
         static let defaultStreamQuality = "unifi.defaultStreamQuality"
         static let cameraStreamQualities = "unifi.cameraStreamQualities"
         static let pinnedCameras  = "unifi.pinnedCameras"
+        static let pinnedLastFrames = "unifi.pinnedLastFrames"
+        static let popUpCameras = "unifi.popUpCameras"
+        static let popUpTriggers = "unifi.popUpTriggers"
+        static let popUpsPaused = "unifi.popUpsPaused"
+        static let popUpLingerSeconds = "unifi.popUpLingerSeconds"
+        static let popUpCorner = "unifi.popUpCorner"
+        static let popUpSize = "unifi.popUpSize"
+        static let popUpDirection = "unifi.popUpDirection"
+        static let popUpDisplay = "unifi.popUpDisplay"
         static let sites          = "unifi.sites"
         /// Sites whose cameras were already distributed over the existing
         /// layout profiles (see `seedSiteCamerasIfNeeded`).
@@ -264,6 +302,14 @@ final class AppSettings: ObservableObject {
             ? defaults.bool(forKey: Keys.pauseDecodeWhileClosed)
             : true
         keepPanelOpen = defaults.bool(forKey: Keys.keepPanelOpen)
+        popUpsPaused = defaults.bool(forKey: Keys.popUpsPaused)
+        let linger = defaults.integer(forKey: Keys.popUpLingerSeconds)
+        popUpLingerSeconds = linger > 0 ? linger : Self.defaultPopUpLingerSeconds
+        popUpCorner = defaults.string(forKey: Keys.popUpCorner).flatMap(PopUpCorner.init(rawValue:)) ?? .bottomRight
+        popUpSize = defaults.string(forKey: Keys.popUpSize).flatMap(PopUpSize.init(rawValue:)) ?? .medium
+        popUpDirection = defaults.string(forKey: Keys.popUpDirection)
+            .flatMap(PopUpDirection.init(rawValue:)) ?? .vertical
+        popUpDisplay = defaults.string(forKey: Keys.popUpDisplay) ?? ""
         activeProfileID = defaults.string(forKey: Keys.activeProfileID) ?? Self.defaultProfileID
         migrateLayoutProfilesIfNeeded()
         sites = loadSites()
