@@ -120,7 +120,9 @@ final class ProtectHub: ObservableObject {
             subscribe(service, site: site)
             let siteID = site.id
             let stream = ProtectEventStream(service: service) { [weak self] data in
-                RTSPClient.log("[Events] \(String(data: data.prefix(4000), encoding: .utf8) ?? "<\(data.count) bytes>")")
+                if RTSPClient.debugLoggingEnabled {
+                    RTSPClient.log("[Events] \(String(data: data.prefix(4000), encoding: .utf8) ?? "<\(data.count) bytes>")")
+                }
                 self?.eventMessages.send((siteID, data))
             }
             eventStreams[siteID] = stream

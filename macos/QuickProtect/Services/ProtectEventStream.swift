@@ -37,6 +37,11 @@ final class ProtectEventStream {
             if let socket = service?.makeEventSocket() {
                 socket.resume()
                 RTSPClient.log("[Events] connecting")
+                // A socket that died silently (the Mac slept, the network
+                // changed) never fails `receive`, so detections would stop
+                // arriving with nothing to show for it. Probe it.
+                let watchdog = Task { await Self.keepAlive(socket) }
+                defer { watchdog.cancel() }
                 do {
                     while !Task.isCancelled {
                         let message = try await socket.receive()
@@ -58,6 +63,40 @@ final class ProtectEventStream {
                 return
             }
             backoff = min(backoff * 2, 60)
+        }
+    }
+
+    static let pingInterval: Double = 30
+    static let pongTimeout: Double = 10
+
+    /// Pings until cancelled; closes the socket when a pong doesn't come
+    /// back in time, which makes the pending `receive` throw and the stream
+    /// reconnect.
+    private nonisolated static func keepAlive(_ socket: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: .seconds(pingInterval))
+            } catch {
+                return
+            }
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                        // Also called, with an error, once the socket is closed.
+                        socket.sendPing { _ in done.resume() }
+                    }
+                }
+                group.addTask {
+                    do {
+                        try await Task.sleep(for: .seconds(pongTimeout))
+                    } catch {
+                        return // the pong arrived first
+                    }
+                    socket.cancel(with: .abnormalClosure, reason: nil)
+                }
+                await group.next()
+                group.cancelAll()
+            }
         }
     }
 }
