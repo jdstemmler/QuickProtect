@@ -82,8 +82,14 @@ targets:
         NSLocalNetworkUsageDescription: "QuickProtect connects to your UniFi Protect controller on your local network to list cameras and stream video."
         # Declares only standard/exempt encryption (HTTPS/TLS) is used.
         ITSAppUsesNonExemptEncryption: false
+        # Controllers present a self-signed certificate, which ATS rejects
+        # for a fully qualified host name before the session delegate is asked
+        # (NSAllowsLocalNetworking only exempts IPs, .local and unqualified
+        # names, and its presence makes ATS ignore NSAllowsArbitraryLoads).
+        # Trust is decided by PinningSessionDelegate for every controller
+        # request: system trust first, then the pinned key.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
 
     entitlements:
       path: QuickProtect/QuickProtect.entitlements
