@@ -99,6 +99,14 @@ final class AppSettings: ObservableObject {
     @Published var popUpDisplay: String {
         didSet { defaults.set(popUpDisplay, forKey: Keys.popUpDisplay) }
     }
+    /// Name of the system sound played when a chosen detection starts;
+    /// empty for silence (the default).
+    @Published var popUpSound: String {
+        didSet { defaults.set(popUpSound, forKey: Keys.popUpSound) }
+    }
+    /// The macOS alert sounds offered for detections.
+    static let popUpSoundNames = ["Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
+                                  "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"]
 
     /// Bottom-left corner (screen coordinates) where a kept-open panel was last
     /// left; nil until it has been shown once in that mode.
@@ -247,6 +255,7 @@ final class AppSettings: ObservableObject {
         static let popUpSize = "unifi.popUpSize"
         static let popUpDirection = "unifi.popUpDirection"
         static let popUpDisplay = "unifi.popUpDisplay"
+        static let popUpSound = "unifi.popUpSound"
         static let sites          = "unifi.sites"
         /// Sites whose cameras were already distributed over the existing
         /// layout profiles (see `seedSiteCamerasIfNeeded`).
@@ -310,6 +319,7 @@ final class AppSettings: ObservableObject {
         popUpDirection = defaults.string(forKey: Keys.popUpDirection)
             .flatMap(PopUpDirection.init(rawValue:)) ?? .vertical
         popUpDisplay = defaults.string(forKey: Keys.popUpDisplay) ?? ""
+        popUpSound = defaults.string(forKey: Keys.popUpSound) ?? ""
         activeProfileID = defaults.string(forKey: Keys.activeProfileID) ?? Self.defaultProfileID
         migrateLayoutProfilesIfNeeded()
         sites = loadSites()

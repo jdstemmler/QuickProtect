@@ -18,6 +18,8 @@ final class PinnedWindowManager: DetectionPopUpWindows {
     /// Pop-ups still in the stack, in arrival order. One the user moved or
     /// resized drops out and stays where it was put until it closes.
     private var stack: [String] = []
+    /// Windows the user pinned that are currently highlighted for a detection.
+    private var alerted: Set<String> = []
     private var layoutSubscriptions: Set<AnyCancellable> = []
     /// The user closed a detection pop-up themselves (its close button).
     var onPopUpClosedByUser: ((String) -> Void)?
@@ -96,6 +98,8 @@ final class PinnedWindowManager: DetectionPopUpWindows {
             // Pinning a camera whose pop-up is showing keeps that window.
             controllers[camera.id]?.makePermanent()
             leaveStack(camera.id)
+            // Its detection is still running: clear the inset when it ends.
+            alerted.insert(camera.id)
         } else if isPinned(camera.id) {
             unpin(camera.id)
         } else {
@@ -108,11 +112,17 @@ final class PinnedWindowManager: DetectionPopUpWindows {
     /// Opens a temporary window for a detection. No-op when the camera
     /// already has a window (pinned by the user, or popped up earlier).
     func popUp(_ camera: Camera, showingSecondaryLens: Bool) {
-        if showingSecondaryLens, popUps.contains(camera.id) {
-            // Already up for an earlier detection: add the inset to it.
-            controllers[camera.id]?.showSecondaryLens()
+        if let existing = controllers[camera.id] {
+            // Already showing: a pop-up from an earlier detection, or the
+            // user's own pinned window, which is highlighted instead.
+            if !popUps.contains(camera.id) {
+                alerted.insert(camera.id)
+                existing.setAlerting(true)
+            }
+            if showingSecondaryLens { existing.showSecondaryLens() }
+            return
         }
-        guard controllers[camera.id] == nil, let service = hub?.service(for: camera) else { return }
+        guard let service = hub?.service(for: camera) else { return }
         // Its slot is the end of the stack; the windows already there stay put.
         stack.removeAll { controllers[$0] == nil }
         let aspect = AppSettings.shared.cachedAspectRatio(for: camera.id) ?? PinnedWindowGeometry.fallbackAspect
@@ -135,6 +145,11 @@ final class PinnedWindowManager: DetectionPopUpWindows {
 
     /// Closes a detection pop-up. A window the user pinned is left alone.
     func dismissPopUp(_ cameraId: String) {
+        if alerted.remove(cameraId) != nil {
+            // The user's own window: back to how they had it.
+            controllers[cameraId]?.setAlerting(false)
+            controllers[cameraId]?.hideSecondaryLens()
+        }
         guard popUps.remove(cameraId) != nil else { return }
         controllers.removeValue(forKey: cameraId)?.teardown()
         leaveStack(cameraId)
@@ -154,12 +169,13 @@ final class PinnedWindowManager: DetectionPopUpWindows {
 
     func unpin(_ cameraId: String) {
         let wasPopUp = popUps.remove(cameraId) != nil
+        let wasAlerted = alerted.remove(cameraId) != nil
         AppSettings.shared.removePinned(cameraId)
         controllers.removeValue(forKey: cameraId)?.teardown()
-        if wasPopUp {
-            leaveStack(cameraId)
-            onPopUpClosedByUser?(cameraId)
-        }
+        if wasPopUp { leaveStack(cameraId) }
+        // Closing a window that was showing a detection dismisses the
+        // detection too, or its next update would pop the camera up again.
+        if wasPopUp || wasAlerted { onPopUpClosedByUser?(cameraId) }
     }
 
     /// Restore persisted pins for cameras now present, and refresh open windows.
@@ -209,6 +225,7 @@ final class PinnedWindowManager: DetectionPopUpWindows {
         controllers.removeAll()
         popUps.removeAll()
         stack.removeAll()
+        alerted.removeAll()
         hub?.cleanupPinnedStreams()
     }
 }
@@ -627,6 +644,16 @@ final class PinnedCameraController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Outlines the window while a detection is in progress on its camera.
+    func setAlerting(_ alerting: Bool) {
+        streamState.isAlerting = alerting
+    }
+
+    /// Takes the second-lens inset off again (a pinned window's detection ended).
+    func hideSecondaryLens() {
+        stopSecondaryLens()
+    }
+
     private func stopSecondaryLens() {
         insetTask?.cancel()
         insetTask = nil
@@ -694,6 +721,8 @@ final class PinnedStreamState: ObservableObject {
     @Published var certificateChanged = false
     /// Name of the second lens while its inset is wanted; nil otherwise.
     @Published var insetLabel: String?
+    /// A detection is in progress on this (user-pinned) window's camera.
+    @Published var isAlerting = false
 }
 
 /// The contents of a pinned floating window: the live feed plus hover chrome
@@ -759,6 +788,14 @@ struct PinnedCameraView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+        )
+        .overlay(
+            // Drawn inside the edge so the clip shape doesn't cut it in half.
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.accentColor, lineWidth: 3)
+                .opacity(stream.isAlerting ? 1 : 0)
+                .animation(.easeInOut(duration: 0.25), value: stream.isAlerting)
+                .allowsHitTesting(false)
         )
         .onHover { hover = $0 }
         .preferredColorScheme(.dark)

@@ -1,17 +1,20 @@
-import Foundation
+import AppKit
 import Combine
 
 /// The window operations detection pop-ups need. `PinnedWindowManager` is the
 /// real one; keeping the coordinator off the view layer lets tests drive it.
 @MainActor
 protocol DetectionPopUpWindows: AnyObject {
-    /// Opens a temporary window; no-op when the camera already has one.
+    /// Shows a detection: opens a temporary window, or, when the user has
+    /// the camera pinned, highlights that window instead. Repeated calls for
+    /// a window already showing change nothing.
     /// `showingSecondaryLens` adds the camera's second lens (a doorbell's
-    /// package camera) as an inset, also on a pop-up that is already open.
+    /// package camera) as an inset, also on a window that is already open.
     func popUp(_ camera: Camera, showingSecondaryLens: Bool)
-    /// Closes a temporary window; a window the user pinned is left alone.
+    /// The detection is over: closes the temporary window, or takes the
+    /// highlight and inset off a pinned one, which stays open.
     func dismissPopUp(_ cameraId: String)
-    /// Called when the user closes a temporary window themselves.
+    /// Called when the user closes a window that was showing a detection.
     var onPopUpClosedByUser: ((String) -> Void)? { get set }
 }
 
@@ -33,6 +36,10 @@ final class DetectionPopUpCoordinator {
     /// Detections already over. The controller keeps sending updates for an
     /// event after it ends; without this they would reopen the window.
     private var finishedEvents = RecentIDs(capacity: 256)
+    /// Detections already announced with the sound, so their updates stay quiet.
+    private var announcedEvents = RecentIDs(capacity: 256)
+    /// Plays the named alert sound.
+    private let playSound: (String) -> Void
     private var closeTasks: [String: Task<Void, Never>] = [:]
 
     /// Debug aid: launch with QUICKPROTECT_POPUP_SECONDARY_LENS=1 to show the
@@ -44,10 +51,12 @@ final class DetectionPopUpCoordinator {
     /// A pop-up whose detection never reports an end closes after this long.
     static let maxOpenSeconds = 300
 
-    init(windows: any DetectionPopUpWindows, settings: AppSettings, camera: @escaping (String) -> Camera?) {
+    init(windows: any DetectionPopUpWindows, settings: AppSettings, camera: @escaping (String) -> Camera?,
+         playSound: @escaping (String) -> Void = { NSSound(named: $0)?.play() }) {
         self.windows = windows
         self.settings = settings
         self.camera = camera
+        self.playSound = playSound
         windows.onPopUpClosedByUser = { [weak self] cameraID in self?.userClosed(cameraID) }
     }
 
@@ -86,6 +95,9 @@ final class DetectionPopUpCoordinator {
               let camera = camera(cameraID), camera.isOnline else { return }
 
         RTSPClient.log("[PopUp] \(camera.name): \(event.type) \(event.smartDetectTypes)")
+        if announcedEvents.insert(event.id), !settings.popUpSound.isEmpty {
+            playSound(settings.popUpSound)
+        }
         // A package on the step is seen by the downward lens, not the main one.
         windows.popUp(camera, showingSecondaryLens: event.triggers.contains(.package) || Self.alwaysShowSecondaryLens)
         if event.isEnded {
@@ -135,9 +147,12 @@ struct RecentIDs {
 
     func contains(_ id: String) -> Bool { members.contains(id) }
 
-    mutating func insert(_ id: String) {
-        guard members.insert(id).inserted else { return }
+    /// Returns true when the id was not already present.
+    @discardableResult
+    mutating func insert(_ id: String) -> Bool {
+        guard members.insert(id).inserted else { return false }
         order.append(id)
         if order.count > capacity { members.remove(order.removeFirst()) }
+        return true
     }
 }

@@ -8,7 +8,7 @@ extension SettingsView {
 
     var popUpsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("A camera's floating window opens when it detects something you chose, and closes again after the detection ends. Windows you pin yourself are never closed.")
+            Text("A camera's floating window opens when it detects something you chose, and closes again after the detection ends. A window you pinned yourself is highlighted instead, and is never closed.")
                 .font(.system(size: 11))
                 .foregroundColor(palette.subtext)
                 .fixedSize(horizontal: false, vertical: true)
@@ -57,6 +57,20 @@ extension SettingsView {
                     options: [("5 s", 5), ("15 s", 15), ("30 s", 30), ("60 s", 60)],
                     selection: $settings.popUpLingerSeconds
                 )
+            }
+            AuroraSettingsRow(
+                String(localized: "Sound"),
+                hint: String(localized: "Played once when a chosen detection starts."),
+                labelExpands: true
+            ) {
+                Picker("", selection: $settings.popUpSound) {
+                    Text("None").tag("")
+                    ForEach(AppSettings.popUpSoundNames, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                // Preview the choice.
+                .onChange(of: settings.popUpSound) { NSSound(named: $0)?.play() }
             }
             AuroraSettingsRow(
                 String(localized: "Pause pop-ups"),

@@ -34,6 +34,7 @@ final class DetectionPopUpCoordinatorTests: XCTestCase {
     private var settings: AppSettings!
     private var windows: Windows!
     private var coordinator: DetectionPopUpCoordinator!
+    private var sounds: [String] = []
 
     override func setUp() async throws {
         suiteName = "DetectionPopUpCoordinatorTests-\(UUID().uuidString)"
@@ -43,9 +44,11 @@ final class DetectionPopUpCoordinatorTests: XCTestCase {
         let cameras = try ["cam", "other"].map { id in
             try JSONDecoder().decode(Camera.self, from: Data(#"{"id":"\#(id)","name":"Cam","state":"CONNECTED"}"#.utf8))
         }
-        coordinator = DetectionPopUpCoordinator(windows: windows, settings: settings) { id in
-            cameras.first { $0.id == id }
-        }
+        coordinator = DetectionPopUpCoordinator(
+            windows: windows, settings: settings,
+            camera: { id in cameras.first { $0.id == id } },
+            playSound: { [unowned self] name in self.sounds.append(name) }
+        )
         settings.setPopUpEnabled(true, for: "cam")
         settings.setPopUpTriggers([.person], for: "cam")
     }
@@ -129,6 +132,17 @@ final class DetectionPopUpCoordinatorTests: XCTestCase {
         send("e2", types: ["package"])
         XCTAssertEqual(windows.secondaryLens, ["cam"])
         XCTAssertEqual(windows.popUpCount, 1)
+    }
+
+    func testSoundPlaysOncePerDetectionAndOnlyWhenChosen() {
+        send("e1")
+        XCTAssertEqual(sounds, [])       // silent by default
+        settings.popUpSound = "Glass"
+        send("e2")
+        send("e2")                       // the same detection updating
+        send("e2", ended: true)
+        send("e3", types: ["vehicle"])   // not a chosen trigger
+        XCTAssertEqual(sounds, ["Glass"])
     }
 
     func testDetectionReportedOnlyOnceOverStillShows() {
