@@ -67,7 +67,9 @@ final class DetectionPopUpCoordinator {
 
         if event.isEnded {
             finishedEvents.insert(event.id)
-            suppressedEvents.remove(event.id)
+            // The user already closed this detection's window; its end must
+            // not bring the window back for the linger time.
+            if suppressedEvents.remove(event.id) != nil { return }
             if activeEvents[cameraID]?.remove(event.id) != nil {
                 if activeEvents[cameraID]?.isEmpty == true {
                     activeEvents[cameraID] = nil

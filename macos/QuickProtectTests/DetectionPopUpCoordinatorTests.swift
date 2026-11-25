@@ -97,6 +97,21 @@ final class DetectionPopUpCoordinatorTests: XCTestCase {
         XCTAssertEqual(windows.open, ["cam"])
     }
 
+    func testEndOfADismissedDetectionDoesNotReopen() {
+        send("e1")
+        windows.userCloses("cam")
+        send("e1", ended: true)
+        XCTAssertTrue(windows.open.isEmpty)
+        XCTAssertEqual(windows.popUpCount, 1)
+    }
+
+    func testMotionOpensTheWindowWhenChosen() {
+        settings.setPopUpTriggers([.motion], for: "cam")
+        // Motion events carry no smartDetectTypes field at all.
+        coordinator.handle(Data(#"{"type":"add","item":{"id":"m1","modelKey":"event","type":"motion","start":1,"device":"cam"}}"#.utf8))
+        XCTAssertEqual(windows.open, ["cam"])
+    }
+
     func testUpdatesAfterTheEndDoNotReopen() {
         send("e1")
         send("e1", ended: true)
